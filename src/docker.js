@@ -15,6 +15,8 @@ var dockerCommandsToLabels = {
   logs: "Logs",
 };
 
+var DOCKER_COMMAND_PREFIX = '';
+
 var hasDocker = !!GLib.find_program_in_path("docker");
 var hasPodman = !!GLib.find_program_in_path("podman");
 var hasXTerminalEmulator = !!GLib.find_program_in_path("x-terminal-emulator");
@@ -43,12 +45,38 @@ var isDockerRunning = async () => {
   return cmdResult.search(/dockerd/) >= 0;
 };
 
+var getContainersCancellable = null;
+var containerStatusCancellable = null;
 /**
  * Get an array of containers
  * @return {Array} The array of containers as { project, name, status }
  */
  var getContainers = async () => {
-  const psOut = await execCommand(["docker", "ps", "-a", "--format", "{{.Names}},{{.Status}}"]);
+   log('getContainersCancellable', getContainersCancellable);
+  if (getContainersCancellable !== null) {
+    log('Cancelling previous getContainersCancellable');
+    getContainersCancellable.cancel();
+    getContainersCancellable = null;
+    return [];
+  }
+
+  // Object.entries(containerCancellableMap).forEach(([name, cancellable]) => {
+  //   log('Cancelling previous containerCancellableMap', name);
+  //   cancellable.cancel();
+  // });
+  if (containerStatusCancellable !== null) {
+    log('Cancelling previous containerStatusCancellable');
+    containerStatusCancellable.cancel();
+    // containerStatusCancellable = null;
+  }
+  
+  getContainersCancellable = new Gio.Cancellable();
+  log('getContainersCancellable created');
+  const psOut = await execCommand(
+    ["docker", "ps", "-a", "--format", "{{.Names}},{{.Status}}"],
+    () => getContainersCancellable = null,
+    getContainersCancellable
+  );
   
   const images = psOut.split('\n').filter((line) => line.trim().length).map((line) => {
     const [name, status] = line.split(',');
@@ -58,18 +86,56 @@ var isDockerRunning = async () => {
     }
   });
 
-  return Promise.all(images.map(async ({name, status}) => {
+  // const loop = GLib.MainLoop.new(null, false);
+  containerStatusCancellable = new Gio.Cancellable();
+  const r = await Promise.all(images.map(async ({name, status}) => {
+    // log('containerCancellableMap', name);
+    // const composePrj = await execCommand(
+    //   ["docker", "inspect", "-f", "{{index .Config.Labels \"com.docker.compose.project\"}}", name],
+    //   null,
+    //   containerStatusCancellable
+    // );
+    // return ({
+    //   project: composePrj.split('\n')[0].trim(),
+    //   name,
+    //   status
+    // });
     try {
-      const composePrj = await execCommand(["docker", "inspect", "-f", "{{index .Config.Labels \"com.docker.compose.project\"}}", name]);
-      return {
+      // containerCancellableMap[name] = new Gio.Cancellable();
+      log('containerCancellableMap', name);
+      const composePrj = await execCommand(
+        ["docker", "inspect", "-f", "{{index .Config.Labels \"com.docker.compose.project\"}}", name],
+        // () => delete containerCancellableMap[name],
+        null,
+        containerStatusCancellable
+      );
+      return ({
         project: composePrj.split('\n')[0].trim(),
         name,
         status
-      };
+      });
     } catch (e) {
-      return logError(e);
+      logError(e);
+      return e;
     }
   }));
+  log('Nulling containerStatusCancellable');
+  containerStatusCancellable = null;
+  return r;
+  // const a = Promise.all(p)
+  //   .then((results) => {
+  //     log('results', results);
+  //     // loop.quit();
+  //     return results.filter((result) => result !== undefined);
+  //   }
+  // );
+  log('before return');
+  // loop.run();
+  return a;
+  // const r = await Promise.all(p);
+  // log('getContainers', r);
+  // // loop.quit();
+  // return r;
 };
 
 /**
@@ -102,13 +168,15 @@ var runCommand = async (command, containerName, callback) => {
     : ["gnome-terminal", "--", "sh", "-c"];
   switch (command) {
     case "exec":
-      cmd = [...cmd, "'docker exec -it " + containerName + " sh; exec $SHELL'"];
+      cmd = [...cmd, "'" + (DOCKER_COMMAND_PREFIX !== '' ? DOCKER_COMMAND_PREFIX  + ' ' : '') + "docker exec -it " + containerName + " sh; exec $SHELL'"];
+      log(cmd);
+      log(cmd.join(" "));
       GLib.spawn_command_line_async(cmd.join(" "));
       break;
     case "logs":
       cmd = [
         ...cmd,
-        "'docker logs -f --tail 2000 " + containerName + "; exec $SHELL' ",
+        "'" + (DOCKER_COMMAND_PREFIX !== '' ? DOCKER_COMMAND_PREFIX  + ' ' : '') + "docker logs -f --tail 2000 " + containerName + "; exec $SHELL' ",
       ];
       GLib.spawn_command_line_async(cmd.join(" "));
       break;
@@ -125,6 +193,7 @@ async function execCommand(
 ) {
   let execProm = null;
   const loop = GLib.MainLoop.new(null, false);
+  if (DOCKER_COMMAND_PREFIX !== '') argv = [...DOCKER_COMMAND_PREFIX.split(' '), ...argv];
   try {
     // There is also a reusable Gio.SubprocessLauncher class available
     let proc = new Gio.Subprocess({
@@ -139,11 +208,17 @@ async function execCommand(
     //
     // If the class implements GAsyncInitable then Class.new_async() could
     // also be used and awaited in a Promise.
-    proc.init(null);
+    proc.init(cancellable);
+    let cancelId = 0;
+
+    if (cancellable instanceof Gio.Cancellable) {
+        cancelId = cancellable.connect(() => proc.force_exit());
+    }
+
     execProm = new Promise((resolve, reject) => {
       // communicate_utf8() returns a string, communicate() returns a
       // a GLib.Bytes and there are "headless" functions available as well
-      proc.communicate_utf8_async(null, cancellable, (proc, res) => {
+      proc.communicate_utf8_async(null, null, (proc, res) => {
         let ok, stdout, stderr;
 
         try {
@@ -159,8 +234,12 @@ async function execCommand(
           }
           resolve(stdout);
         } catch (e) {
+          logError(e);
           reject(e);
         } finally {
+          if (cancelId > 0) {
+            cancellable.disconnect(cancelId);
+        }
           loop.quit();
       }
       });

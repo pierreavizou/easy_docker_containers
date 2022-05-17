@@ -20,6 +20,8 @@ function enable() {
 // Triggered when extension is disabled
 function disable() {
   _indicator.clearLoop();
+  _indicator.settings.disconnect(_indicator.refreshDelaySignal);
+  _indicator.settings.disconnect(_indicator.commandPrefixSignal);
   _indicator.destroy();
   _indicator = null;
 }

@@ -25,7 +25,8 @@ var DockerMenu = GObject.registerClass(
       this._feedMenu = this._feedMenu.bind(this);
       this._updateCountLabel = this._updateCountLabel.bind(this);
       this._refreshDelayChanged = this._refreshDelayChanged.bind(this);
-      this._debouncedRefreshCount = debounce(this._refreshCount, 500).bind(
+      this._commandPrefixChanged = this._commandPrefixChanged.bind(this);
+      this._debouncedRefreshCount = debounce(this._refreshCount, 1000).bind(
         this
       );
       this._timeout = null;
@@ -35,9 +36,15 @@ var DockerMenu = GObject.registerClass(
       );
 
       this._refreshDelay = this.settings.get_int("refresh-delay");
-      this.settings.connect(
+      this.refreshDelaySignal = this.settings.connect(
         "changed::refresh-delay",
         this._refreshDelayChanged
+      );
+
+      Docker.DOCKER_COMMAND_PREFIX = this.settings.get_string("command-prefix");
+      this.commandPrefixSignal = this.settings.connect(
+        "changed::command-prefix",
+        this._commandPrefixChanged
       );
 
       // Custom Docker icon as menu button
@@ -76,6 +83,11 @@ var DockerMenu = GObject.registerClass(
       this._debouncedRefreshCount();
     }
 
+    _commandPrefixChanged() {
+      Docker.DOCKER_COMMAND_PREFIX = this.settings.get_string("command-prefix");
+      this._debouncedRefreshCount();
+    }
+
     _updateCountLabel(count) {
       if (this.buttonText.get_text() !== count) {
         this.buttonText.set_text(count.toString(10));
@@ -86,19 +98,25 @@ var DockerMenu = GObject.registerClass(
     // It allows to have up-to-date information on docker containers
     async _refreshMenu() {
       if (this.menu.isOpen) {
+        // Add CSS class to menu
+        this.menu.box.add_style_class_name("container-list-loading");
         const containers = await Docker.getContainers();
         this._updateCountLabel(
           containers.filter((container) => isContainerUp(container)).length
         );
-        this._feedMenu(containers).catch((e) =>
+        this._feedMenu(containers).catch((e) => {
+          this.menu.removeAll();
           this.menu.addMenuItem(new PopupMenuItem(e.message))
+        }
         );
+        this.menu.box.remove_style_class_name("container-list-loading");
       }
     }
 
     _checkServices() {
       if (!Docker.hasPodman && !Docker.hasDocker) {
         let errMsg = _("Please install Docker or Podman to use this plugin");
+        this.menu.removeAll();
         this.menu.addMenuItem(new PopupMenuItem(errMsg));
         throw new Error(errMsg);
       }
@@ -133,13 +151,14 @@ var DockerMenu = GObject.registerClass(
     clearLoop() {
       if (this._timeout) {
         GLib.source_remove(this._timeout);
-        GLib.source_remove(this._debouncedRefreshCount);
-        this._debouncedRefreshCount = null;
+        // GLib.source_remove(this._debouncedRefreshCount);
+        // this._debouncedRefreshCount = null;
         this._timeout = null;
       }
     }
 
     async _refreshCount() {
+      log("Refreshing count");
       try {
         // If the extension is not enabled but we have already set a timeout, it means this function
         // is called by the timeout after the extension was disabled, we should just bail out and
@@ -154,8 +173,13 @@ var DockerMenu = GObject.registerClass(
 
         this.clearLoop();
 
-        const dockerCount = await Docker.getContainerCount();
-        this._updateCountLabel(dockerCount);
+        try {
+          const dockerCount = await Docker.getContainerCount();
+          this._updateCountLabel(dockerCount);
+        } catch (e) {
+          this._updateCountLabel(e.message);
+          // this.menu.addMenuItem(new PopupMenuItem(e.message));
+        }
 
         // Allow setting a value of 0 to disable background refresh in the settings
         if (this._refreshDelay > 0) {

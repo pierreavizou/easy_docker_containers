@@ -9,6 +9,10 @@ const Me = ExtensionUtils.getCurrentExtension();
 const [major] = Config.PACKAGE_VERSION.split(".");
 const shellVersion = Number.parseInt(major);
 
+const settings = ExtensionUtils.getSettings(
+  "red.software.systems.easy_docker_containers"
+);
+
 const BOX_PADDING = 8;
 const MARGIN_BOTTOM = 8;
 const WIDGET_PADDING = 16;
@@ -29,9 +33,6 @@ const addToBox = (box, element) => {
 };
 
 const getIntervalSpinButton = () => {
-  const settings = ExtensionUtils.getSettings(
-    "red.software.systems.easy_docker_containers"
-  );
   const spin = new Gtk.SpinButton({
     valign: Gtk.Align.CENTER,
     climb_rate: 10,
@@ -47,6 +48,15 @@ const getIntervalSpinButton = () => {
   settings.bind("refresh-delay", spin, "value", Gio.SettingsBindFlags.DEFAULT);
   return spin;
 };
+
+const getPrefixEntry = () => {
+  const entry = new Gtk.Entry({
+    valign: Gtk.Align.CENTER,
+    placeholder_text: "Prefix",
+  });
+  settings.bind("command-prefix", entry, "text", Gio.SettingsBindFlags.DEFAULT);
+  return entry;
+}
 
 // Heavily inspired by https://github.com/MichalW/gnome-bluetooth-battery-indicator/blob/6b769eacd5b58eaef9d4fd7160cbd5fef9723731/settingsWidget.js
 const SettingsWidget = GObject.registerClass(
@@ -130,6 +140,16 @@ function fillPreferencesWindow(window) {
 
   row.add_suffix(delayInput);
   row.activatable_widget = delayInput;
+
+  const prefixRow = new Adw.ActionRow({
+    title: "Command prefix",
+  });
+  group.add(prefixRow);
+
+  const prefixEntry = getPrefixEntry();
+
+  prefixRow.add_suffix(prefixEntry);
+  prefixRow.activatable_widget = prefixEntry;
 
   window.add(page);
   return window;

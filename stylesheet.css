@@ -15,3 +15,7 @@
 .status-paused {
 	color: #00b0ff;
 }
+
+.container-list-loading {
+	color: #6e6a6a;
+}
